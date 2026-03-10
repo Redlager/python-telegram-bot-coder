@@ -24,6 +24,7 @@ import logging
 import pickle
 import socket
 import time
+import sys
 from collections import defaultdict
 from http import HTTPStatus
 from io import BytesIO
@@ -2037,7 +2038,13 @@ class TestBotWithoutRequest:
             "instance" in str(recwarn[2].message)
         )
         for warning in recwarn:
-            assert warning.filename == __file__, "wrong stacklevel!"
+            got = warning.filename
+            expected = __file__
+            if sys.platform.startswith("win"):
+                # Windows can disagree on drive-letter casing for the same path
+                assert got.lower() == expected.lower(), "wrong stacklevel!"
+            else:
+                assert got == expected, "wrong stacklevel!"
             assert warning.category is PTBUserWarning
 
     async def test_set_get_my_name(self, offline_bot, monkeypatch):
