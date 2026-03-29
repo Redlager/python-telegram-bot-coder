@@ -1,5 +1,7 @@
 import logging
 import os
+import time
+from collections import defaultdict
 from typing import Final
 
 from dotenv import load_dotenv
@@ -31,17 +33,25 @@ load_dotenv()
 #     ...
 
 SYSTEM_INSTRUCTION = (
-    "Eres un asistente de CoderNeural, experto en IA, automatización, desarrollo web y tecnología.\n"
+    "Eres un asistente de CoderNeural, experto en IA, automatización y desarrollo de software.\n"
     "Responde siempre en español.\n\n"
     "📋 Reglas:\n"
     "- Respuestas muy concisas (máx. 2-3 oraciones).\n"
     "- Directo al punto, sin relleno.\n"
-    "- Usa 1-2 emojis máximo para claridad visual.\n"
-    "- Si el tema es complejo o requiere implementación, sugiere contacto.\n\n"
+    "- Usa 1-2 emojis máximo.\n"
+    "- Tono profesional, claro y orientado a negocio.\n"
+    "- Siempre que sea posible, enfoca la respuesta en beneficios (ahorro de tiempo, automatización, eficiencia).\n"
+    "- Si el tema es complejo o el usuario muestra interés → sugerir contacto.\n\n"
     "📞 Contacto:\n"
     "- Email: contacto@coderneural.com\n"
     "- WhatsApp: https://wa.me/5493764983924\n\n"
-    "📌 Áreas: chatbots, automatización, APIs, backend, frontend, análisis de datos, IA."
+    "📌 Servicios:\n"
+    "- Chatbots inteligentes\n"
+    "- Automatización de procesos\n"
+    "- Integración de APIs\n"
+    "- Backend y frontend\n"
+    "- Análisis de datos\n"
+    "- Inteligencia Artificial"
 )
 
 # Configurar Groq
@@ -52,6 +62,49 @@ if groq_api_key:
 else:
     groq_client = None
     LOGGER.warning("GROQ_API_KEY no configurada. El chat de IA no funcionará.")
+
+# Rate limiting: máx 5 mensajes por usuario cada 60 segundos
+RATE_LIMIT_MESSAGES = 5
+RATE_LIMIT_WINDOW = 60  # segundos
+_user_timestamps: dict[int, list[float]] = defaultdict(list)
+
+PROMPT_INJECTION_TOKENS = (
+    "ignora",
+    "ignore",
+    "olvida",
+    "forget",
+    "system prompt",
+    "instrucciones anteriores",
+    "jailbreak",
+    "bypass",
+    "override",
+    "act as",
+    "actua como",
+    "eres ahora",
+    "nuevo rol",
+    "pretend",
+)
+
+
+def is_rate_limited(user_id: int) -> tuple[bool, int]:
+    """Retorna (True, segundos_restantes) si el usuario superó el límite."""
+    now = time.time()
+    _user_timestamps[user_id] = [
+        t for t in _user_timestamps[user_id] if now - t < RATE_LIMIT_WINDOW
+    ]
+    if len(_user_timestamps[user_id]) >= RATE_LIMIT_MESSAGES:
+        oldest = _user_timestamps[user_id][0]
+        seconds_left = int(RATE_LIMIT_WINDOW - (now - oldest)) + 1
+        return True, seconds_left
+    _user_timestamps[user_id].append(now)
+    return False, 0
+
+
+def has_prompt_injection(text: str) -> bool:
+    """Retorna True si el mensaje parece un intento de prompt injection."""
+    text_lower = text.lower()
+    return any(token in text_lower for token in PROMPT_INJECTION_TOKENS)
+
 
 INFO: Final[str] = (
     "Somos CoderNeural.\n"
@@ -524,6 +577,23 @@ async def sugerir(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if any(token in text for token in farewell_tokens):
         await update.message.reply_text(
             "Gracias por pasar. Cuando quieras saber mas usa /info, /servicios, /equipo o /contacto."
+        )
+        return
+
+    # Rate limiting
+    user_id = update.effective_user.id
+    limited, seconds_left = is_rate_limited(user_id)
+    if limited:
+        await update.message.reply_text(
+            f"⏳ Demasiados mensajes seguidos. Espera {seconds_left} segundos e intenta de nuevo."
+        )
+        return
+
+    # Detectar prompt injection
+    if has_prompt_injection(update.message.text or ""):
+        LOGGER.warning(f"Posible prompt injection del usuario {user_id}")
+        await update.message.reply_text(
+            "❌ Ese tipo de mensaje no está permitido. Usa /info, /servicios o /contacto."
         )
         return
 
